@@ -317,6 +317,8 @@ a.btn.primary{color:var(--accent-fg)}
 .evnew h3{margin:0;font-size:15px}
 @media (max-width:520px){.evrow{grid-template-columns:1fr auto 28px}.evrow .linkbtn{grid-column:1}}
 .evdef{grid-column:1/-1}
+.rolesel{width:auto;padding:4px 8px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;border-radius:999px;cursor:pointer}
+.rolesel.r-admin{color:var(--taken)}.rolesel.r-editor{color:var(--hold)}.rolesel.r-staff{color:var(--avail)}
 </style>
 </head>
 <body>
@@ -1516,9 +1518,9 @@ async function openSettings(){
           <p class="note">Vendors have their own page with search, bulk import from your sheet, access codes and tracking.</p>
           <button class="btn self-start" data-s="openv">Open vendor list →</button></section>
         <section class="grp"><div class="eyebrow">Team</div>
-          <p class="note">Add a team member's email (any email, not just Gmail). The site creates their login with an access code, just like vendors. Copy their login message and send it to them. Staff can review requests, book and release booths and manage vendors; admins can also edit the layout, prices and team. You can also promote a vendor from the Vendors page; they keep their existing code.</p>
+          <p class="note">Add a team member's email (any email, not just Gmail). The site creates their login with an access code, just like vendors. Copy their login message and send it to them. Staff can review requests, book and release booths and manage vendors. Editors can also edit the floor plan, booths and booth prices. Admins can do everything, including settings, team and events. Change anyone's role with the dropdown next to their name; their login stays the same. You can also promote a vendor from the Vendors page; they keep their existing code.</p>
           ${team.map(m => `<div class="trow team3"><div class="vmain"><span class="temail">${esc(m.email)}</span>${m.code ? `<span class="code">Code: <b>${esc(m.code)}</b> <button class="linkbtn" data-s="copytm" data-e="${esc(m.email)}">Copy login message</button></span>` : m.email === S.email ? '' : `<span class="note">Logs in with Google. <button class="linkbtn" data-s="codetm" data-e="${esc(m.email)}">Create access code</button></span>`}</div>
-            <span class="pill ${m.role==='admin'?'t':m.role==='editor'?'h':'a'}">${esc(m.role)}</span>${m.email === S.email ? '<span class="note">you</span>' : `<button class="x" data-s="deltm" data-e="${esc(m.email)}" aria-label="Remove">✕</button>`}</div>`).join('') || '<p class="note">No one yet.</p>'}
+            ${m.email === S.email ? `<span class="pill t">${esc(m.role)}</span>` : `<select class="inp rolesel r-${esc(m.role)}" data-role="${esc(m.email)}" aria-label="Role for ${esc(m.email)}">${[['staff','Staff'],['editor','Editor'],['admin','Admin']].map(([v,l]) => `<option value="${v}" ${m.role === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`}${m.email === S.email ? '<span class="note">you</span>' : `<button class="x" data-s="deltm" data-e="${esc(m.email)}" aria-label="Remove">✕</button>`}</div>`).join('') || '<p class="note">No one yet.</p>'}
           <div class="trow add"><input class="inp" id="tEmail" type="email" placeholder="name@company.com"><select class="inp" id="tRole"><option value="staff">Staff</option><option value="editor">Editor (floor plan &amp; booths)</option><option value="admin">Admin</option></select><button class="btn sm" data-s="addtm">Add</button></div>
         </section>
       </div>
@@ -1528,8 +1530,16 @@ async function openSettings(){
   }
   draw();
   host.onsubmit = null;
-  host.oninput = host.onchange = e => {
+  host.oninput = host.onchange = async e => {
     const t = e.target;
+    if (t.dataset.role !== undefined){
+      if (e.type !== 'change') return;
+      const em = t.dataset.role, role = t.value, prev = (team.find(m => m.email === em) || {}).role;
+      try { await updateDoc(doc(R.team, em), {role}); team = team.map(m => m.email === em ? {...m, role} : m); draw();
+        toast(`${em} is now ${role === 'admin' ? 'an admin' : role === 'editor' ? 'an editor' : 'staff'}. They should log out and back in.`); }
+      catch(err){ t.value = prev; toast(permErr(err) ? 'Couldn’t change the role. Only admins can, with the latest rules published.' : 'Couldn’t change the role.'); }
+      return;
+    }
     if (t.id === 'sName') draft.event.name = t.value; else if (t.id === 'sCur') draft.event.currency = t.value;
     else if (t.id === 'sMailSub') draft.event.mailSubject = t.value;
     else if (t.id === 'sMailBody') draft.event.mailBody = t.value;
