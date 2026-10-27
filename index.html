@@ -304,12 +304,26 @@ a.btn.primary{color:var(--accent-fg)}
 .vedithead b{font-size:15px}
 .trow.team3{grid-template-columns:1fr auto auto}
 .btn.google.small{padding:6px 10px;font-size:12px;opacity:.85}
+.editadd{background:var(--accent-soft)}
+.evsel{width:auto;max-width:220px;padding:6px 8px;font-size:13px;font-weight:600}
+.modal.evmodal{width:min(560px,100%);max-height:calc(100vh - 32px);display:flex;flex-direction:column}
+.evmodal .mbody{overflow:auto}
+.evlist{display:flex;flex-direction:column}
+.evrow{display:grid;grid-template-columns:1fr auto auto 28px;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line)}
+.evrow .vmain{display:flex;flex-direction:column;min-width:0}
+.evrow.cur b{color:var(--accent)}
+.evrow a.btn{text-decoration:none}
+.evnew{display:flex;flex-direction:column;gap:10px;padding-top:6px}
+.evnew h3{margin:0;font-size:15px}
+@media (max-width:520px){.evrow{grid-template-columns:1fr auto 28px}.evrow .linkbtn{grid-column:1}}
 </style>
 </head>
 <body>
 <div class="app">
   <header class="top">
     <div class="brand"><h1 id="evName">Amman Christmas Market Vendor Map</h1><span class="live" id="live"><i></i><span id="liveTxt">Connecting</span></span></div>
+    <select id="evSel" class="inp evsel" aria-label="Switch event" hidden></select>
+    <button class="btn" id="btnEvents" hidden>Events</button>
     <div class="seg" id="modeSeg" hidden>
       <button id="mSell" aria-pressed="true">Sell</button>
       <button id="mEdit" aria-pressed="false">Edit layout</button>
@@ -344,7 +358,6 @@ a.btn.primary{color:var(--accent-fg)}
 </div>
 <div id="drawerHost"></div>
 <div class="toast" id="toast" hidden></div>
-
 <script type="module">
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import { getFirestore, initializeFirestore, doc, collection, onSnapshot, getDoc, getDocs, setDoc, updateDoc, deleteDoc, deleteField, runTransaction, writeBatch } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
@@ -363,17 +376,30 @@ const app = initializeApp(firebaseConfig);
 const db = initializeFirestore(app, {ignoreUndefinedProperties: true}); // empty values are skipped instead of failing a save
 const auth = getAuth(app);
 
+/* ---------- events ----------
+   The first event (Amman Christmas Market) lives at the top of the database as before ("main").
+   Every new event lives under events/{id}/... with exactly the same layout.
+   The event shown is picked by ?e=<id> in the address. */
+const EID = ((new URLSearchParams(location.search).get('e') || 'main').toLowerCase().replace(/[^a-z0-9]/g, '')) || 'main';
+const evPath = (eid, ...segs) => eid === 'main' ? segs : ['events', eid, ...segs];
+const P_ = (...segs) => evPath(EID, ...segs);
+// Vendor logins for a new event are separate accounts: name+e-<id>@domain (never emailed; only used to log in).
+const aliasEmail = (email, eid) => eid === 'main' ? email : email.replace('@', `+e-${eid}@`);
+const realEmail = e => String(e || '').replace(/\+e-[a-z0-9]+@/, '@');
+const eventOfEmail = e => { const m = /\+e-([a-z0-9]+)@/.exec(String(e || '')); return m ? m[1] : 'main'; };
+const eventUrl = eid => location.origin + location.pathname + (eid === 'main' ? '' : '?e=' + eid);
 const R = {
-  cfg: doc(db, 'cfg', 'main'),
-  layout: doc(db, 'layout', 'main'),
-  plan: doc(db, 'plan', 'meta'),
-  chunks: collection(db, 'plan', 'meta', 'chunks'),
-  status: doc(db, 'public', 'status'),
-  sales: collection(db, 'sales'),
-  team: collection(db, 'team'),
-  requests: collection(db, 'requests'),
-  vendors: collection(db, 'vendors'),
-  pricing: doc(db, 'pricing', 'main'),
+  cfg: doc(db, ...P_('cfg', 'main')),
+  layout: doc(db, ...P_('layout', 'main')),
+  plan: doc(db, ...P_('plan', 'meta')),
+  chunks: collection(db, ...P_('plan', 'meta', 'chunks')),
+  status: doc(db, ...P_('public', 'status')),
+  sales: collection(db, ...P_('sales')),
+  team: collection(db, 'team'), // one team for all events
+  requests: collection(db, ...P_('requests')),
+  vendors: collection(db, ...P_('vendors')),
+  pricing: doc(db, ...P_('pricing', 'main')),
+  events: doc(db, 'meta', 'events'),
 };
 const EVENT_NAME = 'Amman Christmas Market Vendor Map';
 const DEFAULT_CFG = {
@@ -611,7 +637,7 @@ stage.addEventListener('pointerup', endDrag);
 stage.addEventListener('pointercancel', () => { S.drag = null; renderMap(); });
 
 function select(id){
-  if (S.sel !== id){ S.sel = id; S.form = null; S.confirming = null; S.releasing = false; S.reqSent = null; S.reqErr = ''; }
+  if (S.sel !== id){ S.sel = id; S.form = null; S.confirming = null; S.releasing = false; S.reqSent = null; S.reqErr = ''; S.editAddons = null; }
   S.sideKey = ''; renderAll();
   if (!panelOpen()) setPanel(true, false);
   if (window.innerWidth <= 860) $('#side').scrollIntoView({behavior:'smooth', block:'start'});
@@ -837,9 +863,10 @@ function reviewPanel(id, b, head){
     ${r.notes ? `<p class="note">“${esc(r.notes)}”</p>` : ''}
     ${!+r.total ? `<p class="warn">The visitor didn't see prices. At today's prices this is ${fmt(now.total)} incl. VAT; that's what approving will record.</p>` :
       Math.abs((+r.total||0) - now.total) > 0.01 ? `<p class="warn">Prices changed since this request. At today's prices it would be ${fmt(now.total)} incl. VAT. Approving keeps the price the vendor saw.</p>` : ''}
-    ${S.confirming === 'reject' ? `<div class="confirm"><b>Reject this request?</b><span class="note">The request is deleted and ${esc(b.label)} becomes available again.${r.via === 'invite' ? ' The vendor can then request another of their booths.' : ''} Remember to let ${esc(r.name)} know.</span><div class="actions"><button class="btn" data-act="cancel">Back</button><button class="btn red" data-act="reject-yes" ${S.busy?'disabled':''}>Reject request</button></div></div>` :
+    ${S.editAddons === id ? `</div>${addonEditor(b, +r.base > 0 ? +r.base : basePrice(b, id))}<div class="sec">` : ''}
+    ${S.editAddons === id ? '' : S.confirming === 'reject' ? `<div class="confirm"><b>Reject this request?</b><span class="note">The request is deleted and ${esc(b.label)} becomes available again.${r.via === 'invite' ? ' The vendor can then request another of their booths.' : ''} Remember to let ${esc(r.name)} know.</span><div class="actions"><button class="btn" data-act="cancel">Back</button><button class="btn red" data-act="reject-yes" ${S.busy?'disabled':''}>Reject request</button></div></div>` :
     `<div class="actions"><button class="btn hold" data-act="approve-hold" ${S.busy?'disabled':''}>Approve · unpaid</button><button class="btn red" data-act="approve-paid" ${S.busy?'disabled':''}>Approve · paid</button></div>
-    <button class="btn danger" data-act="reject">Reject request</button>`}
+    <div class="actions"><button class="btn" data-act="addons-edit">Change add-ons</button><button class="btn danger" data-act="reject">Reject request</button></div>`}
   </div>`;
 }
 function sellPanel(id, b){
@@ -855,9 +882,10 @@ function sellPanel(id, b){
     return `<div class="sec">${head}</div><div class="sec">
       <div>${pillBig}</div>
       ${s ? `<dl class="kv"><dt>Vendor</dt><dd>${esc(s.vendor)}</dd>${s.contact ? `<dt>Contact</dt><dd>${esc(s.contact)}</dd>` : ''}${s.phone ? `<dt>Phone</dt><dd>${esc(s.phone)}</dd>` : ''}${s.email ? `<dt>Email</dt><dd>${esc(s.email)}</dd>` : ''}${s.what ? `<dt>Selling</dt><dd>${esc(s.what)}</dd>` : ''}<dt>Add-ons</dt><dd>${adds.length ? esc(adds.join(', ')) : 'None'}</dd>${partsOf(s)}<dt>Total${s.tax !== undefined ? ' incl. VAT' : ''}</dt><dd><b>${fmt(s.total)}</b></dd><dt>Booked by</dt><dd>${esc(s.by)}</dd><dt>When</dt><dd>${s.at ? new Date(s.at).toLocaleString() : ''}</dd></dl>
-      ${s.notes ? `<p class="note">${esc(s.notes)}</p>` : ''}` : '<p class="note">Loading booking details…</p>'}
-      ${S.releasing ? `<div class="confirm"><b>Release ${esc(b.label)}?</b><span class="note">It becomes available for everyone to sell again.</span><div class="actions"><button class="btn" data-act="release-no">Keep it</button><button class="btn red" data-act="release-yes" ${S.busy?'disabled':''}>Release booth</button></div></div>` :
-      `<div class="actions">${st==='hold' ? `<button class="btn red" data-act="paid" ${S.busy?'disabled':''}>Mark as paid</button>` : ''}<button class="btn danger" data-act="release">Release booth</button></div>`}
+      ${s.notes ? `<p class="note">${esc(s.notes)}</p>` : ''}${s.addonsChangedAt ? `<p class="note">Add-ons last changed by ${esc(s.addonsChangedBy || '')} on ${new Date(s.addonsChangedAt).toLocaleString()}.</p>` : ''}` : '<p class="note">Loading booking details…</p>'}
+      ${s && S.editAddons === id ? `</div>${addonEditor(b, s.base !== undefined && s.base !== null && s.base !== '' ? +s.base : basePrice(b, id))}<div class="sec">` : ''}
+      ${S.editAddons === id ? '' : S.releasing ? `<div class="confirm"><b>Release ${esc(b.label)}?</b><span class="note">It becomes available for everyone to sell again.</span><div class="actions"><button class="btn" data-act="release-no">Keep it</button><button class="btn red" data-act="release-yes" ${S.busy?'disabled':''}>Release booth</button></div></div>` :
+      `<div class="actions">${s ? `<button class="btn" data-act="addons-edit">Change add-ons</button>` : ''}${st==='hold' ? `<button class="btn red" data-act="paid" ${S.busy?'disabled':''}>Mark as paid</button>` : ''}</div><button class="btn danger" data-act="release">Release booth</button>`}
     </div>`;
   }
   const f = S.form || (S.form = {addons:{}, vendor:'', phone:'', notes:''});
@@ -942,7 +970,7 @@ side.addEventListener('click', async e => {
       try { await updateDoc(R.layout, {[`labels.${lid}`]: deleteField()}); toast('Text deleted'); } catch { toast('Could not delete. Try again.'); }
       return;
     }
-    case 'close': S.selLabel = null; S.sel = null; S.form = null; S.confirming = null; S.releasing = false; S.reqSent = null; S.reqErr = ''; renderAll(); return;
+    case 'close': S.editAddons = null; S.selLabel = null; S.sel = null; S.form = null; S.confirming = null; S.releasing = false; S.reqSent = null; S.reqErr = ''; renderAll(); return;
     case 'ask-hold': S.confirming = 'hold'; renderSide(); return;
     case 'ask-reserve': S.confirming = 'reserved'; renderSide(); return;
     case 'cancel': S.confirming = null; renderSide(); return;
@@ -953,6 +981,14 @@ side.addEventListener('click', async e => {
     case 'reject-yes': return rejectRequest(id, b);
     case 'paid': return markPaid(id);
     case 'release': S.releasing = true; renderSide(); return;
+    case 'addons-edit': {
+      const cur = statusOf(id) === 'pend' ? S.requests.get(id) : S.sales.get(id);
+      S.editAddons = id; S.releasing = false; S.confirming = null;
+      S.form = {addons: JSON.parse(JSON.stringify((cur && cur.addons) || {})), vendor: ''};
+      S.sideKey = ''; renderSide(); return;
+    }
+    case 'addons-cancel': S.editAddons = null; S.form = null; S.sideKey = ''; renderSide(); return;
+    case 'addons-save': return saveAddons(id, b);
     case 'release-no': S.releasing = false; renderSide(); return;
     case 'release-yes': return release(id);
     case 'delete':
@@ -1029,6 +1065,20 @@ function priceParts(b, addons){
   return {subtotal: Math.round(subtotal * 100) / 100, tax, total: Math.round((subtotal + tax) * 100) / 100, rate: taxRate()};
 }
 function computeTotal(b, addons){ return priceParts(b, addons).total; }
+function partsWithBase(b, addons, base){
+  const subtotal = addonsFor(b).reduce((t, a) => t + addonCost(a, (addons||{})[a.id]), +base || 0);
+  const tax = Math.round(subtotal * taxRate()) / 100;
+  return {subtotal: Math.round(subtotal * 100) / 100, tax, total: Math.round((subtotal + tax) * 100) / 100, rate: taxRate()};
+}
+// Inline editor used for booked booths and pending requests
+function addonEditor(b, base){
+  const {html} = addonBlock(S.form, b);
+  const p = partsWithBase(b, S.form.addons, base);
+  return `<div class="sec editadd"><div class="eyebrow">Change add-ons</div>${html || '<p class="note">No add-ons for this category.</p>'}
+    ${totalBox(p, 'New total')}
+    <p class="note">The booth price stays at ${fmt(base)} (as agreed); only the add-ons change.</p>
+    <div class="actions"><button class="btn" data-act="addons-cancel">Cancel</button><button class="btn primary" data-act="addons-save" ${S.busy?'disabled':''}>${S.busy ? 'Saving…' : 'Save add-ons'}</button></div></div>`;
+}
 const totalBox = (p, label = 'Total') => `<div class="totals"><div><span>Subtotal</span><b>${fmt(p.subtotal)}</b></div><div><span>VAT ${num(p.rate)}%</span><b>${fmt(p.tax)}</b></div><div class="grand"><span>${label} incl. VAT</span><b>${fmt(p.total)}</b></div></div>`;
 async function commitSale(id, b){
   if (S.busy) return; S.busy = true; renderSide();
@@ -1042,7 +1092,7 @@ async function commitSale(id, b){
       const map = (snap.exists() && snap.data().map) || {};
       if (map[id]) throw new Error('TAKEN');
       tx.set(R.status, {map: {[id]: {s: status, at: body.at}}}, {merge: true});
-      tx.set(doc(db, 'sales', id), body);
+      tx.set(doc(R.sales, id), body);
     });
     toast(status === 'reserved' ? `${b.label} reserved for ${body.vendor}` : `${b.label} on hold for ${body.vendor}`);
     S.form = null; S.confirming = null;
@@ -1051,12 +1101,29 @@ async function commitSale(id, b){
     else toast(permErr(err) ? 'Your account can’t book booths. Ask the organiser to add you to the team.' : 'Could not save the booking. Check your connection and try again.');
   } finally { S.busy = false; S.sideKey = ''; renderAll(); }
 }
+async function saveAddons(id, b){
+  if (S.busy) return;
+  const pending = statusOf(id) === 'pend';
+  const cur = pending ? S.requests.get(id) : S.sales.get(id); if (!cur) return;
+  const addons = {}; for (const a of addonsFor(b)){ const v = S.form.addons[a.id]; if (v !== undefined && v !== false && v !== 0) addons[a.id] = v; }
+  const base = pending ? (+cur.base > 0 ? +cur.base : basePrice(b, id)) : (cur.base !== undefined && cur.base !== null && cur.base !== '' ? +cur.base : basePrice(b, id));
+  const P = partsWithBase(b, addons, base);
+  S.busy = true; S.sideKey = ''; renderSide();
+  try {
+    const changes = {addons, subtotal: P.subtotal, tax: P.tax, total: P.total, base};
+    if (!pending) Object.assign(changes, {taxRate: P.rate, addonsChangedAt: Date.now(), addonsChangedBy: S.email});
+    await updateDoc(doc(pending ? R.requests : R.sales, id), changes);
+    S.editAddons = null; S.form = null;
+    toast(`Add-ons updated for ${b.label}. New total ${fmt(P.total)} incl. VAT.`);
+  } catch(e){ toast(permErr(e) ? 'Only the team can change add-ons.' : 'Could not save. Try again.'); }
+  finally { S.busy = false; S.sideKey = ''; renderAll(); }
+}
 async function markPaid(id){
   S.busy = true; renderSide();
   try {
     await runTransaction(db, async tx => {
       tx.set(R.status, {map: {[id]: {s: 'reserved', at: Date.now()}}}, {merge: true});
-      tx.update(doc(db, 'sales', id), {status: 'reserved', paidAt: Date.now(), paidBy: S.email});
+      tx.update(doc(R.sales, id), {status: 'reserved', paidAt: Date.now(), paidBy: S.email});
     });
     toast('Marked as paid');
   } catch { toast('Could not update. Try again.'); } finally { S.busy = false; S.sideKey = ''; renderAll(); }
@@ -1066,7 +1133,7 @@ async function release(id){
   try {
     await runTransaction(db, async tx => {
       tx.update(R.status, {[`map.${id}`]: deleteField()});
-      tx.delete(doc(db, 'sales', id));
+      tx.delete(doc(R.sales, id));
     });
     S.releasing = false; toast('Booth released');
   } catch { toast('Could not release. Try again.'); } finally { S.busy = false; S.sideKey = ''; renderAll(); }
@@ -1107,7 +1174,7 @@ async function approveRequest(id, b, status){
       const rs = await tx.get(doc(R.requests, id));
       if (!rs.exists()) throw new Error('GONE');
       const r = rs.data(), now = Date.now();
-      tx.set(doc(db, 'sales', id), {status, vendor: r.business, contact: r.name, phone: r.phone, email: r.email || '', what: r.what || '', notes: r.notes || '',
+      tx.set(doc(R.sales, id), {status, vendor: r.business, contact: r.name, phone: r.phone, email: r.email || '', what: r.what || '', notes: r.notes || '',
         addons: r.addons || {}, ...(+r.total ? {subtotal: r.subtotal ?? r.total, tax: r.tax ?? 0, total: r.total} : (P => ({subtotal: P.subtotal, tax: P.tax, total: P.total}))(priceParts(b, r.addons || {}))), taxRate: taxRate(), base: +r.base || basePrice(b, id), label: b.label, by: `Website request · approved by ${S.email}`, requestedAt: r.at, at: now, ...(status === 'reserved' ? {paidAt: now, paidBy: S.email} : {})});
       tx.set(R.status, {map: {[id]: {s: status, at: now}}}, {merge: true});
       tx.delete(doc(R.requests, id));
@@ -1221,8 +1288,12 @@ function openLogin(){
   };
   host.onsubmit = async e => {
     e.preventDefault();
-    const email = $('#lEmail').value.trim(), pass = $('#lPass').value.trim();
-    try { await signInWithEmailAndPassword(auth, email, pass); host.innerHTML = ''; }
+    const email = $('#lEmail').value.trim().toLowerCase(); let pass = $('#lPass').value.trim();
+    // Access codes: XXXX-XXXX (first event) or EVENT-XXXX-XXXX (other events). Capitals don't matter.
+    if (/^([a-z0-9]+-)?[a-z0-9]{4}-[a-z0-9]{4}$/i.test(pass)) pass = pass.toUpperCase();
+    const m = /^([A-Z0-9]+)-[A-Z0-9]{4}-[A-Z0-9]{4}$/.exec(pass);
+    const eid = m ? m[1].toLowerCase() : 'main';
+    try { await signInWithEmailAndPassword(auth, aliasEmail(email, eid), pass); host.innerHTML = ''; }
     catch(err){
       const c = err.code || '';
       draw(c.includes('invalid-credential') || c.includes('wrong-password') || c.includes('user-not-found') || c.includes('invalid-login') ? 'That email and access code don’t match. Check both and try again.' :
@@ -1258,7 +1329,9 @@ async function migratePricing(){
   } catch(e){ console.warn('Price migration skipped', e); }
 }
 async function applyUser(u){
-  S.email = u ? (u.email || '').toLowerCase() : null;
+  const authEmail = u ? (u.email || '').toLowerCase() : null;
+  S.email = authEmail ? realEmail(authEmail) : null;
+  S.authEvent = authEmail ? eventOfEmail(authEmail) : null;
   S.verified = !!(u && u.emailVerified);
   S.role = null; S.invite = null; S.pricing = null;
   if (S.unsubInv){ S.unsubInv(); S.unsubInv = null; }
@@ -1273,6 +1346,8 @@ async function applyUser(u){
         try { await setDoc(doc(R.team, S.email), {role: 'admin', addedAt: Date.now()}); S.role = 'admin'; } catch {}
       }
     }
+    // A vendor belongs to the event their access code is for: open that event's map.
+    if (!S.role && S.authEvent && S.authEvent !== EID && (S.authEvent !== 'main' || !S.verified)){ location.replace(eventUrl(S.authEvent)); return; }
     if (!S.role){
       try {
         const v = await getDoc(doc(R.vendors, S.email));
@@ -1286,12 +1361,16 @@ async function applyUser(u){
   if (S.unsubSales){ S.unsubSales(); S.unsubSales = null; S.sales = new Map(); }
   if (S.unsubReq){ S.unsubReq(); S.unsubReq = null; S.requests = new Map(); }
   if (isAdmin()){
-    try { const st = await getDoc(R.status); if (!st.exists()) await setDoc(R.status, {map: {}}); } catch {}
-    await migratePricing();
+    // (New events get these when they're created; a mistyped event link never creates anything.)
+    if (EID === 'main'){
+      try { const st = await getDoc(R.status); if (!st.exists()) await setDoc(R.status, {map: {}}); } catch {}
+      await migratePricing();
+    }
   }
   if (isTeam() || isVendor()){
     S.unsubPricing = onSnapshot(R.pricing, snap => { S.pricing = snap.exists() ? snap.data() : null; S.addons = S.pricing ? (S.pricing.addons || []) : (S.legacy.addons || []); S.sideKey = ''; renderAll(); }, () => {});
   }
+  if (isTeam()) loadEvents();
   if (isTeam()){
     S.unsubSales = onSnapshot(R.sales, snap => { S.sales = new Map(snap.docs.map(d => [d.id, d.data()])); renderAll(); }, () => {});
     S.unsubReq = onSnapshot(R.requests, snap => { S.requests = new Map(snap.docs.map(d => [d.id, d.data()])); renderAll(); }, () => {});
@@ -1314,10 +1393,12 @@ function makeCode(){
   let c = ''; for (const x of r) c += A[x % A.length];
   return c.slice(0, 4) + '-' + c.slice(4);
 }
-async function createVendorLogin(email){
-  const code = makeCode();
+// Vendor logins belong to the event open now; team logins (forTeam) work for every event.
+async function createVendorLogin(email, forTeam = false){
+  const eid = forTeam ? 'main' : EID;
+  const code = (eid === 'main' ? '' : eid.toUpperCase() + '-') + makeCode();
   try {
-    const cred = await createUserWithEmailAndPassword(secondaryAuth(), email, code);
+    const cred = await createUserWithEmailAndPassword(secondaryAuth(), aliasEmail(email, eid), code);
     const uidV = cred.user.uid; await signOut(secondaryAuth());
     return {uid: uidV, code};
   } catch(e){
@@ -1325,11 +1406,11 @@ async function createVendorLogin(email){
     throw e;
   }
 }
-const siteUrl = () => location.origin + location.pathname;
-const DEFAULT_MAIL_SUBJECT = 'Your booth booking login – Amman Christmas Market';
+const siteUrl = () => eventUrl(EID);
+const DEFAULT_MAIL_SUBJECT = 'Your booth booking login – {event}';
 const DEFAULT_MAIL_BODY = `Hello {business},
 
-Thank you for applying to the Amman Christmas Market. We're happy to invite you to choose your booth on our online vendor map.
+Thank you for applying to {event}. We're happy to invite you to choose your booth on our online vendor map.
 
 YOUR LOGIN
 Website: {link}
@@ -1352,7 +1433,7 @@ Your request shows as pending while our team reviews it. We will contact you to 
 Need help? {contact}
 
 Best regards,
-Amman Christmas Market team`;
+{event} team`;
 function boothsText(v){
   const labels = (v.booths || []).map(id => (S.booths.get(id) || {}).label).filter(Boolean);
   const cats = (v.cats || []).map(c => 'all ' + cat(c).name + ' booths');
@@ -1364,7 +1445,7 @@ function fillTemplate(t, v){
 }
 const mailSubject = v => fillTemplate(S.event.mailSubject || DEFAULT_MAIL_SUBJECT, v);
 const loginMessage = v => fillTemplate(S.event.mailBody || DEFAULT_MAIL_BODY, v);
-const teamMessage = m => `Hello,\n\nYou've been added to the ${S.event.name || EVENT_NAME} team as ${m.role === 'admin' ? 'an admin' : 'staff'}.\n\nWebsite: ${siteUrl()}\nEmail: ${m.email}\nAccess code: ${m.code}\n\nOpen the website, press "Log in" at the top right, and enter your email and access code. You'll then see the full map with every booth's status, the booking requests to review, and the Vendors list.\n\nPlease keep your access code private.`;
+const teamMessage = m => `Hello,\n\nYou've been added to the ${S.event.name || EVENT_NAME} team as ${m.role === 'admin' ? 'an admin' : 'staff'}.\n\nWebsite: ${eventUrl('main')}\nEmail: ${m.email}\nAccess code: ${m.code}\n\nOpen the website, press "Log in" at the top right, and enter your email and access code. You'll then see the full map with every booth's status, the booking requests to review, and the Vendors list.\n\nPlease keep your access code private.`;
 const mailtoLink = v => `mailto:${encodeURIComponent(v.email)}?subject=${encodeURIComponent(mailSubject(v))}&body=${encodeURIComponent(loginMessage(v))}`;
 async function copyText(t){
   try { await navigator.clipboard.writeText(t); toast('Copied. Paste it into WhatsApp or email.'); }
@@ -1478,7 +1559,7 @@ async function openSettings(){
           try { const vd = await getDoc(doc(R.vendors, em)); if (vd.exists() && vd.data().uid){ uidT = vd.data().uid; codeT = vd.data().code || null; } } catch {}
         }
         let note = '';
-        if (!uidT){ const login = await createVendorLogin(em); if (login.exists) note = ' This email already has a login, so they keep using it (or Google for Gmail).'; else { uidT = login.uid; codeT = login.code; } }
+        if (!uidT){ const login = await createVendorLogin(em, true); if (login.exists) note = ' This email already has a login, so they keep using it (or Google for Gmail).'; else { uidT = login.uid; codeT = login.code; } }
         const body = {role, uid: uidT, code: codeT, addedAt: prev && prev.addedAt || Date.now(), addedBy: S.email};
         await setDoc(doc(R.team, em), JSON.parse(JSON.stringify(body)));
         team = team.filter(m => m.email !== em).concat({email: em, ...body}); draw(); toast(`${em} added as ${role}.${note}`);
@@ -1494,7 +1575,7 @@ async function openSettings(){
           await updateDoc(doc(R.team, em), {uid: vd.data().uid, code: vd.data().code || null});
           team = team.map(m => m.email === em ? {...m, uid: vd.data().uid, code: vd.data().code || null} : m); draw();
           toast('Linked to their vendor login: same email and access code.'); return; } } catch {}
-        const login = await createVendorLogin(em);
+        const login = await createVendorLogin(em, true);
         if (login.exists){ toast('That email already has a login. Delete the user in Firebase → Authentication → Users, then try again.'); return; }
         await updateDoc(doc(R.team, em), {uid: login.uid, code: login.code});
         team = team.map(m => m.email === em ? {...m, uid: login.uid, code: login.code} : m); draw(); toast('Access code created.');
@@ -1555,6 +1636,7 @@ async function openSettings(){
         batch.set(R.cfg, clean({event: draft.event, cats: draft.cats.map(({base, perSqm, ...rest}) => ({...rest, stroke: rest.stroke || rest.color}))}));
         const pc = {}; for (const c of draft.cats) pc[c.id] = {base: +c.base || 0, perSqm: +c.perSqm || 0};
         batch.set(R.pricing, clean({taxRate: draft.taxRate, cats: pc, addons: draft.addons, booths: (S.pricing && S.pricing.booths) || {}}));
+        batch.set(R.events, {list: {[EID]: {name: draft.event.name || EVENT_NAME}}}, {merge: true});
         await batch.commit();
         host.innerHTML = ''; toast('Saved. Everyone sees the changes now.');
       }
@@ -1563,6 +1645,111 @@ async function openSettings(){
   };
 }
 $('#btnSettings').onclick = openSettings;
+
+/* ---------- events ---------- */
+S.events = null; S.unsubEvents = null;
+function loadEvents(){
+  if (S.unsubEvents) return;
+  S.unsubEvents = onSnapshot(R.events, snap => { S.events = (snap.data() || {}).list || {}; renderTop(); if (S.evDraw) S.evDraw(); }, () => {});
+}
+// All events the team can switch between, first event first, then oldest to newest.
+function eventList(){
+  const L = S.events || {};
+  const main = {id: 'main', name: (L.main && L.main.name) || (EID === 'main' ? S.event.name : '') || EVENT_NAME, at: 0};
+  const rest = Object.entries(L).filter(([id, e]) => id !== 'main' && e && !e.hidden).map(([id, e]) => ({id, name: e.name || id.toUpperCase(), at: e.at || 0}));
+  return [main, ...rest.sort((a, b) => a.at - b.at)];
+}
+function openEvents(){
+  const host = $('#drawerHost');
+  const F = {name: '', code: '', copySettings: true, copyLayout: false, busy: false, msg: ''};
+  const draw = () => {
+    const list = eventList();
+    host.innerHTML = `<div class="scrim center" id="scrim"><div class="modal evmodal" role="dialog" aria-label="Events">
+      <div class="dtop"><h2>Events</h2><button class="x" data-ev="close" aria-label="Close">✕</button></div>
+      <div class="mbody">
+        <p class="note">Each event has its own floor plan, booths, prices, vendors and requests. Your team (admins and staff) works on all of them. Vendors only ever see the event their access code is for.</p>
+        <div class="evlist">${list.map(e => `<div class="evrow${e.id === EID ? ' cur' : ''}">
+          <div class="vmain"><b>${esc(e.name)}</b><span class="note">${e.id === 'main' ? 'First event · codes look like ABCD-EFGH' : `Code ${esc(e.id.toUpperCase())} · codes look like ${esc(e.id.toUpperCase())}-ABCD-EFGH`}</span></div>
+          ${e.id === EID ? '<span class="pill a">Open now</span>' : `<a class="btn small" href="${esc(eventUrl(e.id))}">Open</a>`}
+          <button class="linkbtn" data-ev="copylink" data-id="${esc(e.id)}">Copy link</button>
+          ${e.id !== 'main' && isAdmin() ? `<button class="x" data-ev="hide" data-id="${esc(e.id)}" aria-label="Remove from list">✕</button>` : '<span></span>'}
+        </div>`).join('')}</div>
+        ${isAdmin() ? `<div class="evnew">
+          <h3>New event</h3>
+          <label class="f">Event name<input id="evName2" class="inp" placeholder="e.g. Amman Christmas Market 2027" value="${esc(F.name)}"></label>
+          <label class="f">Short code (2–8 letters or numbers)<input id="evCode" class="inp mono" placeholder="e.g. ACM27" maxlength="8" value="${esc(F.code)}"></label>
+          <span class="note">It starts every vendor access code for this event, e.g. ${esc((F.code || 'ACM27').toUpperCase())}-ABCD-EFGH, and can’t be changed later.</span>
+          <label class="ck"><input type="checkbox" id="evCopyS" ${F.copySettings ? 'checked' : ''}> <span>Copy categories, prices, add-ons, VAT and email wording from <b>${esc(S.event.name || EVENT_NAME)}</b></span></label>
+          <label class="ck"><input type="checkbox" id="evCopyL" ${F.copyLayout ? 'checked' : ''}> Also copy its floor plan and booths (same venue)</label>
+          ${F.msg ? `<p class="err">${esc(F.msg)}</p>` : ''}
+          <button class="btn primary self-start" data-ev="create" ${F.busy ? 'disabled' : ''}>${F.busy ? 'Creating…' : 'Create event'}</button>
+        </div>` : ''}
+      </div></div></div>`;
+  };
+  S.evDraw = () => { if (!F.busy && host.querySelector('.evmodal')){ draw(); } };
+  draw();
+  const close = () => { S.evDraw = null; host.innerHTML = ''; host.onclick = host.oninput = host.onchange = null; };
+  host.oninput = host.onchange = e => {
+    const t = e.target;
+    if (t.id === 'evName2') F.name = t.value;
+    if (t.id === 'evCode'){ F.code = t.value.replace(/[^a-z0-9]/gi, '').toUpperCase(); if (t.value !== F.code) t.value = F.code; }
+    if (t.id === 'evCopyS') F.copySettings = t.checked;
+    if (t.id === 'evCopyL') F.copyLayout = t.checked;
+  };
+  host.onclick = async e => {
+    if (e.target.id === 'scrim') return close();
+    const t = e.target.closest('[data-ev]'); if (!t) return; const a = t.dataset.ev;
+    if (a === 'close') return close();
+    if (a === 'copylink'){ copyText(eventUrl(t.dataset.id)); return; }
+    if (a === 'hide'){
+      const ev = eventList().find(x => x.id === t.dataset.id);
+      if (!window.confirm(`Remove “${ev ? ev.name : t.dataset.id}” from the list? Its data is kept, and you can still open it with its link.`)) return;
+      try { await setDoc(R.events, {list: {[t.dataset.id]: {hidden: true}}}, {merge: true}); toast('Removed from the list.'); } catch { toast('Could not remove it.'); }
+      return;
+    }
+    if (a === 'create'){
+      const name = F.name.trim(), id = F.code.toLowerCase();
+      F.msg = '';
+      if (!name) F.msg = 'Give the event a name.';
+      else if (!/^[a-z0-9]{2,8}$/.test(id)) F.msg = 'The short code needs 2 to 8 letters or numbers.';
+      else if (id === 'main' || (S.events && S.events[id])) F.msg = 'That short code is already used. Pick another one.';
+      if (F.msg) return draw();
+      F.busy = true; draw();
+      try {
+        await createEvent(id, name, F.copySettings, F.copyLayout);
+        toast('Event created. Opening it now…');
+        location.href = eventUrl(id);
+      } catch(err){
+        console.error(err); F.busy = false;
+        F.msg = permErr(err) ? 'Couldn’t create it. Make sure you published the latest Firebase rules (with events).' : 'Couldn’t create the event: ' + (err && err.message ? err.message.slice(0, 140) : 'unknown error');
+        draw();
+      }
+    }
+  };
+}
+async function createEvent(id, name, copySettings, copyLayout){
+  const at = (...segs) => doc(db, ...evPath(id, ...segs));
+  const clean = x => JSON.parse(JSON.stringify(x));
+  const ev = {name, currency: S.event.currency || 'JOD', requestMode: 'invite', showStatus: false};
+  if (copySettings) for (const k of ['currency', 'requestMode', 'showStatus', 'contact', 'mailSubject', 'mailBody']) if (S.event[k] !== undefined) ev[k] = S.event[k];
+  const cats = copySettings ? S.cats : DEFAULT_CFG.cats;
+  const pricing = copySettings && S.pricing ? {taxRate: taxRate(), cats: S.pricing.cats || {}, addons: S.pricing.addons || [], booths: copyLayout ? (S.pricing.booths || {}) : {}} : DEFAULT_PRICING;
+  const layout = copyLayout ? {booths: Object.fromEntries(S.booths), labels: Object.fromEntries(S.labels)} : {booths: {}, labels: {}};
+  const batch = writeBatch(db);
+  batch.set(at('cfg', 'main'), clean({event: ev, cats}));
+  batch.set(at('pricing', 'main'), clean(pricing));
+  batch.set(at('layout', 'main'), clean(layout));
+  batch.set(at('public', 'status'), {map: {}});
+  batch.set(R.events, {list: {[id]: {name, at: Date.now(), by: S.email}, ...(EID === 'main' && !(S.events && S.events.main) ? {main: {name: S.event.name || EVENT_NAME}} : {})}}, {merge: true});
+  await batch.commit();
+  if (copyLayout && S.planMeta){
+    const chunks = await getDocs(R.chunks);
+    for (const c of chunks.docs) await setDoc(doc(db, ...evPath(id, 'plan', 'meta', 'chunks', c.id)), c.data());
+    await setDoc(at('plan', 'meta'), clean(S.planMeta));
+  }
+}
+$('#btnEvents').onclick = openEvents;
+$('#evSel').onchange = e => { const id = e.target.value; if (id && id !== EID) location.href = eventUrl(id); };
 
 /* ---------- vendor list page ---------- */
 function parseBoothList(text){
@@ -1794,10 +1981,14 @@ function setMode(m){ S.mode = m; S.confirming = null; renderAll(); }
 $('#mSell').onclick = () => setMode('sell');
 $('#mEdit').onclick = () => setMode('edit');
 function renderTop(){
-  const name = S.event.name || EVENT_NAME;
+  const name = S.noEvent ? 'Event not found – check the link' : S.event.name || EVENT_NAME;
   $('#evName').textContent = name; document.title = name;
   $('#live').classList.toggle('on', S.live); $('#liveTxt').textContent = S.live ? 'Live' : 'Connecting';
   $('#mSell').setAttribute('aria-pressed', S.mode === 'sell'); $('#mEdit').setAttribute('aria-pressed', S.mode === 'edit');
+  { const sel = $('#evSel'), list = isTeam() ? eventList() : [];
+    sel.hidden = !isTeam() || (list.length < 2 && EID === 'main'); $('#btnEvents').hidden = !isTeam();
+    const html = list.some(e => e.id === EID) || !isTeam() ? list.map(e => `<option value="${esc(e.id)}">${esc(e.name)}</option>`).join('') : `<option value="${esc(EID)}">${esc(S.event.name || EID)}</option>` + list.map(e => `<option value="${esc(e.id)}">${esc(e.name)}</option>`).join('');
+    if (sel.dataset.h !== html){ sel.innerHTML = html; sel.dataset.h = html; } sel.value = EID; }
   $('#modeSeg').hidden = !isAdmin(); $('#btnSettings').hidden = !isAdmin(); $('#btnVendors').hidden = !isTeam(); $('#btnExport').hidden = !isTeam();
   $('#btnLogin').hidden = !!S.email; $('#btnLogout').hidden = !S.email;
   $('#who').hidden = !S.email; $('#who').textContent = S.email ? `${S.email}${S.role ? ' · ' + S.role : ''}` : '';
@@ -1825,6 +2016,7 @@ const markLive = snap => { S.live = !snap.metadata.fromCache; };
 onSnapshot(R.cfg, s => {
   const d = s.data() || {};
   S.event = {name:'', currency:'JOD', ...(d.event||{})}; S.cats = d.cats || [];
+  S.noEvent = EID !== 'main' && !s.exists();
   S.legacy = {cats: d.cats || [], addons: d.addons || []};
   if (!S.pricing && (isTeam() || isVendor())) S.addons = d.addons || [];
   markLive(s); S.sideKey = ''; renderAll();
