@@ -448,7 +448,9 @@ const S = {
   unsubSales:null, unsubReq:null, unsubInv:null, invite:null, requests:new Map(), reqSent:null, reqErr:'',
 };
 const isAdmin = () => S.role === 'admin';
-const isTeam = () => S.role === 'admin' || S.role === 'staff';
+const isTeam = () => S.role === 'admin' || S.role === 'staff' || S.role === 'editor';
+// Editors: staff + Edit layout (floor plan, booths, booth category and booth price). No settings, team or events.
+const canEdit = () => S.role === 'admin' || S.role === 'editor';
 const isVendor = () => S.role === 'vendor';
 
 /* ---------- helpers ---------- */
@@ -565,7 +567,7 @@ function renderMap(){
   if (S.drag && S.drag.type === 'new'){ const r = S.drag.cur; html += `<div class="draft" style="left:${r.x*100}%;top:${r.y*100}%;width:${r.w*100}%;height:${r.h*100}%"></div>`; }
   if (!S.planUrl && !S.booths.size){
     html += `<div class="empty"><div class="card">${
-      isAdmin() ? `<h2>Start with your floor plan</h2><p>Upload the 2D plan as a PDF or image. Then switch to Edit layout and drag across the plan to draw each booth.</p><label class="btn primary" for="planFile" style="cursor:pointer">Upload floor plan</label>` :
+      canEdit() ? `<h2>Start with your floor plan</h2><p>Upload the 2D plan as a PDF or image. Then switch to Edit layout and drag across the plan to draw each booth.</p><label class="btn primary" for="planFile" style="cursor:pointer">Upload floor plan</label>` :
       `<h2>Floor plan coming soon</h2><p>The organiser hasn't uploaded the plan yet. This page updates by itself when they do.</p>`}</div></div>`;
   }
   stage.innerHTML = html;
@@ -574,7 +576,7 @@ function ptr(e){ const r = stage.getBoundingClientRect(); return {x: Math.min(1,
 stage.addEventListener('pointerdown', e => {
   const el = e.target.closest('.booth'), lel = e.target.closest('.maplabel');
   if (S.mode !== 'edit') return; // selecting happens on click, so dragging can pan the map
-  if (!isAdmin()) return;
+  if (!canEdit()) return;
   e.preventDefault(); stage.setPointerCapture(e.pointerId);
   const p = ptr(e);
   if (S.addingText){ S.addingText = false; $('#btnText').setAttribute('aria-pressed', false); addLabelAt(p); return; }
@@ -783,7 +785,7 @@ function summaryPanel(){
     <div class="chips">${[['all','All'],['avail','Available'],['pend','Pending'],['hold','On hold'],['taken','Reserved']].map(([k,l]) => `<button class="chip" data-filter="${k}" aria-pressed="${S.filter===k}">${l}</button>`).join('')}</div>
     <div class="list">${rows.length ? rows.map(([id,b]) => { const c = cat(b.cat), st = statusOf(id), v = isTeam() ? who(id) : ''; return `
       <button class="li" data-go="${id}"><span class="lbl">${esc(b.label)}</span><span class="meta">${swatch(c)} ${esc(c.name)}${v ? ' · ' + esc(v) : (st==='avail' ? ' · ' + fmt(basePrice(b, id)) : '')}</span>${pill(st)}</button>`; }).join('') :
-      `<p class="note">${S.booths.size ? 'No booths match this filter.' : (isAdmin() ? 'No booths yet. Choose Edit layout, then drag on the plan to draw one.' : 'No booths have been drawn yet.')}</p>`}</div>
+      `<p class="note">${S.booths.size ? 'No booths match this filter.' : (canEdit() ? 'No booths yet. Choose Edit layout, then drag on the plan to draw one.' : 'No booths have been drawn yet.')}</p>`}</div>
   </div>`;
 }
 function publicSummary(){
@@ -1384,7 +1386,7 @@ async function applyUser(u){
     S.unsubSales = onSnapshot(R.sales, snap => { S.sales = new Map(snap.docs.map(d => [d.id, d.data()])); renderAll(); }, () => {});
     S.unsubReq = onSnapshot(R.requests, snap => { S.requests = new Map(snap.docs.map(d => [d.id, d.data()])); renderAll(); }, () => {});
   }
-  if (!isAdmin() && S.mode === 'edit') S.mode = 'sell';
+  if (!canEdit() && S.mode === 'edit') S.mode = 'sell';
   if (!isTeam() && !isVendor()) S.addons = [];
   S.panel = null; S.sideKey = ''; renderAll();
 }
@@ -1454,7 +1456,7 @@ function fillTemplate(t, v){
 }
 const mailSubject = v => fillTemplate(S.event.mailSubject || DEFAULT_MAIL_SUBJECT, v);
 const loginMessage = v => fillTemplate(S.event.mailBody || DEFAULT_MAIL_BODY, v);
-const teamMessage = m => `Hello,\n\nYou've been added to the ${S.event.name || EVENT_NAME} team as ${m.role === 'admin' ? 'an admin' : 'staff'}.\n\nWebsite: ${baseUrl()}\nEmail: ${m.email}\nAccess code: ${m.code}\n\nOpen the website, press "Log in" at the top right, and enter your email and access code. You'll then see the full map with every booth's status, the booking requests to review, and the Vendors list.\n\nPlease keep your access code private.`;
+const teamMessage = m => `Hello,\n\nYou've been added to the ${S.event.name || EVENT_NAME} team as ${m.role === 'admin' ? 'an admin' : m.role === 'editor' ? 'an editor (you can also change the floor plan, booths and booth prices under Edit layout)' : 'staff'}.\n\nWebsite: ${baseUrl()}\nEmail: ${m.email}\nAccess code: ${m.code}\n\nOpen the website, press "Log in" at the top right, and enter your email and access code. You'll then see the full map with every booth's status, the booking requests to review, and the Vendors list.\n\nPlease keep your access code private.`;
 const mailtoLink = v => `mailto:${encodeURIComponent(v.email)}?subject=${encodeURIComponent(mailSubject(v))}&body=${encodeURIComponent(loginMessage(v))}`;
 async function copyText(t){
   try { await navigator.clipboard.writeText(t); toast('Copied. Paste it into WhatsApp or email.'); }
@@ -1516,8 +1518,8 @@ async function openSettings(){
         <section class="grp"><div class="eyebrow">Team</div>
           <p class="note">Add a team member's email (any email, not just Gmail). The site creates their login with an access code, just like vendors. Copy their login message and send it to them. Staff can review requests, book and release booths and manage vendors; admins can also edit the layout, prices and team. You can also promote a vendor from the Vendors page; they keep their existing code.</p>
           ${team.map(m => `<div class="trow team3"><div class="vmain"><span class="temail">${esc(m.email)}</span>${m.code ? `<span class="code">Code: <b>${esc(m.code)}</b> <button class="linkbtn" data-s="copytm" data-e="${esc(m.email)}">Copy login message</button></span>` : m.email === S.email ? '' : `<span class="note">Logs in with Google. <button class="linkbtn" data-s="codetm" data-e="${esc(m.email)}">Create access code</button></span>`}</div>
-            <span class="pill ${m.role==='admin'?'t':'a'}">${esc(m.role)}</span>${m.email === S.email ? '<span class="note">you</span>' : `<button class="x" data-s="deltm" data-e="${esc(m.email)}" aria-label="Remove">✕</button>`}</div>`).join('') || '<p class="note">No one yet.</p>'}
-          <div class="trow add"><input class="inp" id="tEmail" type="email" placeholder="name@company.com"><select class="inp" id="tRole"><option value="staff">Staff</option><option value="admin">Admin</option></select><button class="btn sm" data-s="addtm">Add</button></div>
+            <span class="pill ${m.role==='admin'?'t':m.role==='editor'?'h':'a'}">${esc(m.role)}</span>${m.email === S.email ? '<span class="note">you</span>' : `<button class="x" data-s="deltm" data-e="${esc(m.email)}" aria-label="Remove">✕</button>`}</div>`).join('') || '<p class="note">No one yet.</p>'}
+          <div class="trow add"><input class="inp" id="tEmail" type="email" placeholder="name@company.com"><select class="inp" id="tRole"><option value="staff">Staff</option><option value="editor">Editor (floor plan &amp; booths)</option><option value="admin">Admin</option></select><button class="btn sm" data-s="addtm">Add</button></div>
         </section>
       </div>
       <div class="dfoot"><button class="btn" data-s="close">Cancel</button><button class="btn primary" data-s="save">Save for everyone</button></div>
@@ -2008,7 +2010,7 @@ function renderTop(){
     sel.hidden = !isTeam() || (list.length < 2 && EID === 'main'); $('#btnEvents').hidden = !isTeam();
     const html = list.some(e => e.id === EID) || !isTeam() ? list.map(e => `<option value="${esc(e.id)}">${esc(e.name)}</option>`).join('') : `<option value="${esc(EID)}">${esc(S.event.name || EID)}</option>` + list.map(e => `<option value="${esc(e.id)}">${esc(e.name)}</option>`).join('');
     if (sel.dataset.h !== html){ sel.innerHTML = html; sel.dataset.h = html; } sel.value = EID; }
-  $('#modeSeg').hidden = !isAdmin(); $('#btnSettings').hidden = !isAdmin(); $('#btnVendors').hidden = !isTeam(); $('#btnExport').hidden = !isTeam();
+  $('#modeSeg').hidden = !canEdit(); $('#btnSettings').hidden = !isAdmin(); $('#btnVendors').hidden = !isTeam(); $('#btnExport').hidden = !isTeam();
   $('#btnLogin').hidden = !!S.email; $('#btnLogout').hidden = !S.email;
   $('#who').hidden = !S.email; $('#who').textContent = S.email ? `${S.email}${S.role ? ' · ' + S.role : ''}` : '';
   $('#btnLogin').textContent = 'Log in';
